@@ -1,0 +1,52 @@
+# GBrain .gitignore
+
+# Binaries
+bin/
+
+# Logs
+logs/
+*.log
+
+# Backups
+backups/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Node modules
+node_modules/
+
+# Temporary
+tmp/
+temp/
+*.tmp
+
+# Test
+test/
+tests/
+*.test
+
+# Documentation (optional)
+docs/_build/
