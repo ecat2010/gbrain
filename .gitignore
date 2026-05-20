@@ -50,3 +50,6 @@ tests/
 
 # Documentation (optional)
 docs/_build/
+
+# Bun build cache
+*.bun-build
