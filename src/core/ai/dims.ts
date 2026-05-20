@@ -228,6 +228,9 @@ export function dimsProviderOptions(
       if (modelId === 'embo-01') {
         return { openaiCompatible: { type: 'db' } };
       }
-      return undefined;
+      // Fallback: pass dimensions for ANY openai-compatible embedding model.
+      // Ollama, llama-server, and most OpenAI-compatible endpoints support
+      // the `dimensions` parameter; it's silently ignored if unsupported.
+      return { openaiCompatible: { dimensions: dims } };
   }
 }
