@@ -1987,7 +1987,8 @@ const file_upload: Operation = {
     // can upload from anywhere on the filesystem (loose) — the user owns the machine.
     // Default is strict when ctx.remote is undefined (defense-in-depth).
     const strict = ctx.remote !== false;
-    validateUploadPath(filePath, process.cwd(), strict);
+    const uploadRoot = process.env.GBRAIN_UPLOAD_ROOT || process.cwd();
+    validateUploadPath(filePath, uploadRoot, strict);
     if (pageSlug) validatePageSlug(pageSlug);
     const filename = basename(filePath);
     validateFilename(filename);
