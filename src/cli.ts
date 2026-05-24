@@ -143,9 +143,11 @@ async function main() {
   // NOT supplied. The runtime altRequired check below overrides the
   // generic required-flag check for that op.
   const queryHasAlt = op.name === 'query' && typeof params.image === 'string' && params.image.length > 0;
+  const fileAlt = op.name === 'put_page' && typeof params.file === 'string'; // --file bypasses content required
   for (const [key, def] of Object.entries(op.params)) {
     if (def.required && params[key] === undefined) {
       if (queryHasAlt && key === 'query') continue;
+      if (fileAlt && key === 'content') continue;
       const cliName = op.cliHints?.name || op.name;
       const positional = op.cliHints?.positional || [];
       const usage = positional.map(p => `<${p}>`).join(' ');
@@ -1618,7 +1620,7 @@ SETUP
 
 PAGES
   get <slug>                         Read a page
-  put <slug> [< file.md]             Write/update a page
+  put <slug> [< file.md] [--file path]  Write/update a page (or use --file to bypass stdin)
   delete <slug>                      Delete a page
   list [--type T] [--tag T] [-n N]   List pages
 

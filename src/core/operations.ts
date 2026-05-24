@@ -3,7 +3,7 @@
  * Each operation defines its schema, handler, and optional CLI hints.
  */
 
-import { lstatSync, realpathSync } from 'fs';
+import { readFileSync, lstatSync, realpathSync } from 'fs';
 import { resolve, relative, sep } from 'path';
 import type { BrainEngine } from './engine.ts';
 import { clampSearchLimit } from './engine.ts';
@@ -538,6 +538,7 @@ const put_page: Operation = {
   params: {
     slug: { type: 'string', required: true, description: 'Page slug' },
     content: { type: 'string', required: true, description: 'Full markdown content with YAML frontmatter' },
+    file: { type: 'string', required: false, description: 'Path to markdown file to read directly (bypasses stdin pipe)' },
   },
   mutating: true,
   scope: 'write',
@@ -606,7 +607,16 @@ const put_page: Operation = {
       // Pack load failed; fall through to legacy inferType behavior.
       activePack = undefined;
     }
-    const result = await importFromContent(ctx.engine, slug, p.content as string, {
+    // --file flag: read content directly from file (bypasses stdin pipe, avoids Windows pipe buffer limits)
+    let resolvedContent = p.content as string;
+    if (p.file) {
+      try {
+        resolvedContent = readFileSync(p.file as string, 'utf-8');
+      } catch (err: any) {
+        throw new OperationError('invalid_params', `--file: could not read "${p.file}": ${err.message}`);
+      }
+    }
+    const result = await importFromContent(ctx.engine, slug, resolvedContent, {
       noEmbed,
       ...(ctx.sourceId ? { sourceId: ctx.sourceId } : {}),
       ...(activePack ? { activePack } : {}),
