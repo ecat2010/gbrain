@@ -10,6 +10,7 @@ import { openai } from './openai.ts';
 import { google } from './google.ts';
 import { anthropic } from './anthropic.ts';
 import { ollama } from './ollama.ts';
+import { openrouter } from './openrouter.ts';
 import { voyage } from './voyage.ts';
 import { litellmProxy } from './litellm-proxy.ts';
 import { deepseek } from './deepseek.ts';
@@ -21,13 +22,13 @@ import { dashscope } from './dashscope.ts';
 import { zhipu } from './zhipu.ts';
 import { azureOpenAI } from './azure-openai.ts';
 import { zeroentropyai } from './zeroentropyai.ts';
-import { bge_local } from './bge-local.ts';
 
 const ALL: Recipe[] = [
   openai,
   google,
   anthropic,
   ollama,
+  openrouter,
   voyage,
   litellmProxy,
   deepseek,
@@ -39,7 +40,6 @@ const ALL: Recipe[] = [
   zhipu,
   azureOpenAI,
   zeroentropyai,
-  bge_local,
 ];
 
 /** Map from `provider:id` key to recipe. */

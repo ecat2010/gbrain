@@ -10,6 +10,9 @@ import { clampSearchLimit } from './engine.ts';
 import type { GBrainConfig } from './config.ts';
 import type { PageType } from './types.ts';
 import { importFromContent } from './import-file.ts';
+import { serializePageToMarkdown, resolvePageFilePath } from './markdown.ts';
+import { mkdirSync, writeFileSync, existsSync, statSync } from 'fs';
+import { dirname } from 'path';
 import { hybridSearch, hybridSearchCached } from './search/hybrid.ts';
 import { expandQuery } from './search/expansion.ts';
 import { dedupResults } from './search/dedup.ts';
@@ -19,6 +22,7 @@ import { extractPageLinks, isAutoLinkEnabled, isAutoTimelineEnabled, parseTimeli
 import { isFactsBackstopEligible } from './facts/eligibility.ts';
 import { stripTakesFence } from './takes-fence.ts';
 import { stripFactsFence } from './facts-fence.ts';
+import { bumpLastRetrievedAt } from './last-retrieved.ts';
 import { CJK_SLUG_CHARS } from './cjk.ts';
 import * as db from './db.ts';
 import { VERSION } from '../version.ts';
@@ -481,6 +485,13 @@ const get_page: Operation = {
       throw new OperationError('page_not_found', `Page not found: ${slug}`, includeDeleted ? 'Check the slug or use fuzzy: true' : 'Page may be soft-deleted; pass include_deleted: true to verify');
     }
 
+    // v0.37.0 (D11): op-layer write-back for the `last_retrieved_at` stale
+    // signal. Fire-and-forget — caller does NOT await. Internal callers
+    // (sync, migrations, dream cycle) bypass this op handler so the signal
+    // stays clean. Throttled to ~1 write / 5 min per page via the SQL clause
+    // inside bumpLastRetrievedAt (D2).
+    bumpLastRetrievedAt(ctx.engine, [page.id]);
+
     const tags = await ctx.engine.getTags(page.slug, sourceOpts);
     // Privacy boundary for the per-token allow-list (v0.28.6 for takes,
     // v0.32.2 for facts).
@@ -577,10 +588,116 @@ const put_page: Operation = {
     // default-source clobber path. importFromContent already accepts
     // opts.sourceId (PR #707/#757 engine work); previously the op handler
     // just didn't pass it.
+    // v0.39 T1.5: load active pack ONCE per put_page invocation; thread to
+    // parseMarkdown via importFromContent so type inference honors user-defined
+    // page_types. Best-effort: pack load failure falls back to legacy inferType
+    // (parity gate preserved). Federated-read closure correction is T19's scope.
+    let activePack: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string> }> } | undefined;
+    try {
+      const { loadActivePack } = await import('./schema-pack/load-active.ts');
+      const { loadConfig } = await import('./config.ts');
+      const resolved = await loadActivePack({
+        cfg: loadConfig(),
+        remote: ctx.remote === false ? false : true,
+        sourceId: ctx.sourceId,
+      });
+      activePack = { page_types: resolved.manifest.page_types };
+    } catch {
+      // Pack load failed; fall through to legacy inferType behavior.
+      activePack = undefined;
+    }
     const result = await importFromContent(ctx.engine, slug, p.content as string, {
       noEmbed,
       ...(ctx.sourceId ? { sourceId: ctx.sourceId } : {}),
+      ...(activePack ? { activePack } : {}),
     });
+
+    // v0.39 T13 — auto-prompt on first unknown-type write.
+    //
+    // Contract (codex finding #8 honored — 7 cases covered):
+    //   - TTY callers: stderr prompt fires once per unique unknown type;
+    //     subsequent writes with the same type silently append to
+    //     candidate audit.
+    //   - Non-TTY callers: ALWAYS succeed; silently append to candidate
+    //     audit. NEVER block. Critical regression test:
+    //     test/put-page-unknown-type-prompt.test.ts pins this.
+    //   - Subagent / MCP / claw-test / autopilot all go through here;
+    //     non-TTY contract preserves their semantics.
+    //   - Pack-load failures (activePack undefined) skip the gate entirely
+    //     since "unknown" has no meaning without a pack reference.
+    if (activePack && result.status === 'imported') {
+      try {
+        const pageType = (result as { page?: { type?: string } }).page?.type ?? null;
+        const knownTypes = new Set(activePack.page_types.map((t) => t.name));
+        if (pageType && !knownTypes.has(pageType)) {
+          const { logSchemaEvent } = await import('./schema-events.ts');
+          logSchemaEvent({
+            verb: 'put_page:unknown_type',
+            outcome: 'success',
+            flags: [`type=${pageType.slice(0, 32)}`, `slug=${slug.slice(0, 64)}`],
+          });
+          if (process.stderr.isTTY && ctx.remote === false) {
+            console.error(
+              `[schema] put_page wrote type=\`${pageType}\` which isn't in active pack \`${activePack.page_types.length ? '<configured>' : 'gbrain-base'}\`. ` +
+              `Run \`gbrain schema review-candidates\` to promote or ignore.`,
+            );
+          }
+        }
+      } catch {
+        // best-effort; never block put_page
+      }
+    }
+
+    // v0.38 put_page write-through (ingestion cathedral):
+    // After importFromContent succeeds, if `sync.repo_path` resolves to a
+    // real directory, persist the markdown file to disk alongside the DB
+    // row. Failures non-fatal — DB write is durable; subsequent sync
+    // reconciles drift.
+    //
+    // Trust gating:
+    //   - Subagent sandbox (viaSubagent without allowedSlugPrefixes) → DB-only.
+    //   - All other writes → write-through.
+    let writeThrough: { written: boolean; path?: string; skipped?: string; error?: string } | undefined;
+    const isSandboxSubagent = ctx.viaSubagent === true
+      && !(Array.isArray(ctx.allowedSlugPrefixes) && ctx.allowedSlugPrefixes.length > 0);
+    if (!ctx.dryRun && result.status !== 'error' && !isSandboxSubagent) {
+      try {
+        const repoPath = await ctx.engine.getConfig('sync.repo_path');
+        if (!repoPath) {
+          writeThrough = { written: false, skipped: 'no_repo_configured' };
+        } else if (!existsSync(repoPath) || !statSync(repoPath).isDirectory()) {
+          writeThrough = { written: false, skipped: 'repo_not_found' };
+        } else {
+          const sourceId = ctx.sourceId ?? 'default';
+          const writtenPage = await ctx.engine.getPage(result.slug, { sourceId });
+          if (writtenPage) {
+            const tags = await ctx.engine.getTags(result.slug, { sourceId });
+            const provenanceVia = ctx.remote === false ? 'put_page' : 'mcp:put_page';
+            const md = serializePageToMarkdown(writtenPage, tags, {
+              frontmatterOverrides: {
+                ingested_via: provenanceVia,
+                ingested_at: new Date().toISOString(),
+                source_kind: provenanceVia,
+              },
+            });
+            const filePath = resolvePageFilePath(repoPath as string, result.slug, sourceId);
+            mkdirSync(dirname(filePath), { recursive: true });
+            writeFileSync(filePath, md, 'utf8');
+            writeThrough = { written: true, path: filePath };
+          } else {
+            writeThrough = { written: false, skipped: 'page_not_found_after_write' };
+          }
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        ctx.logger.warn(`[put_page] write-through failed for ${result.slug}: ${msg}`);
+        writeThrough = { written: false, error: msg };
+      }
+    } else if (isSandboxSubagent) {
+      writeThrough = { written: false, skipped: 'subagent_sandbox' };
+    } else if (ctx.dryRun) {
+      writeThrough = { written: false, skipped: 'dry_run' };
+    }
 
     // Auto-link post-hook: runs AFTER importFromContent (which is its own
     // transaction). Runs even on status='skipped' so reconciliation catches drift
@@ -721,6 +838,7 @@ const put_page: Operation = {
       ...(autoTimeline ? { auto_timeline: autoTimeline } : {}),
       ...(writerLint ? { writer_lint: writerLint } : {}),
       ...(factsQueued ? { facts_backstop: factsQueued } : {}),
+      ...(writeThrough ? { write_through: writeThrough } : {}),
     };
   },
   cliHints: { name: 'put', positional: ['slug'], stdin: 'content' },
@@ -1054,6 +1172,11 @@ const search: Operation = {
     const results = dedupResults(raw);
     const latency_ms = Date.now() - startedAt;
 
+    // v0.37.0 (D11): op-layer last_retrieved_at write-back. Fire-and-forget;
+    // results already returned by engine, this just marks them as user-surfaced
+    // for LSD's stale-page signal. 5-min throttle inside bumpLastRetrievedAt.
+    bumpLastRetrievedAt(ctx.engine, results.map((r) => r.page_id));
+
     // Op-layer capture (v0.25.0). Fire-and-forget — no await on the
     // capture call so MCP response latency is unaffected. search has
     // no expand/detail/vector semantics so meta fields are fixed.
@@ -1249,6 +1372,10 @@ const query: Operation = {
       embeddingColumn: embeddingColumnParam,
     });
     const latency_ms = Date.now() - startedAt;
+
+    // v0.37.0 (D11): op-layer last_retrieved_at write-back. Same shape as the
+    // search handler — fire-and-forget, internal callers bypass this path.
+    bumpLastRetrievedAt(ctx.engine, results.map((r) => r.page_id));
 
     // Op-layer capture (v0.25.0). Fire-and-forget. meta tells gbrain-evals
     // what hybridSearch *actually* did so replay can distinguish "with API
@@ -1987,8 +2114,7 @@ const file_upload: Operation = {
     // can upload from anywhere on the filesystem (loose) — the user owns the machine.
     // Default is strict when ctx.remote is undefined (defense-in-depth).
     const strict = ctx.remote !== false;
-    const uploadRoot = process.env.GBRAIN_UPLOAD_ROOT || process.cwd();
-    validateUploadPath(filePath, uploadRoot, strict);
+    validateUploadPath(filePath, process.cwd(), strict);
     if (pageSlug) validatePageSlug(pageSlug);
     const filename = basename(filePath);
     validateFilename(filename);
@@ -2156,6 +2282,170 @@ const submit_job: Operation = {
     }
 
     return job;
+  },
+};
+
+// v0.38 Slice 3 — D13 — remote-callable submit_agent with registration-time
+// binding enforcement. Distinct from `submit_job` because:
+//   1. It's the FIRST op that lets remote MCP callers spawn paid LLM work
+//      (cost concerns + audit trail differ from generic submit_job).
+//   2. The trust boundary lives in oauth_clients.bound_* fields, not in the
+//      protected-name guard. Bindings are enforced PER-OP, not per-name.
+//   3. The dispatcher is the subagent handler with the gateway-native loop
+//      (agent.use_gateway_loop is auto-on for submit_agent jobs).
+const submit_agent: Operation = {
+  name: 'submit_agent',
+  description: 'Submit an LLM agent job that the worker dispatches via the gateway-native tool loop. Requires the `agent` OAuth scope. Tools, source, slug prefixes, max concurrency, and daily budget are bound at OAuth client registration time.',
+  params: {
+    prompt: { type: 'string', required: true, description: 'User prompt for the agent' },
+    model: { type: 'string', description: 'provider:model string (defaults to models.tier.subagent)' },
+    allowed_tools: { type: 'array', description: 'Subset of bound_tools the agent may invoke', items: { type: 'string' } },
+    allowed_slug_prefixes: { type: 'array', description: 'Subset of bound_slug_prefixes for put_page writes', items: { type: 'string' } },
+    max_turns: { type: 'number', description: 'Max LLM turns (default 20, hard cap 100)' },
+    queue: { type: 'string', description: 'Queue name (default "default")' },
+  },
+  mutating: true,
+  scope: 'agent' as any,
+  handler: async (ctx, p) => {
+    // Remote-callable but only when the OAuth client has scope=agent AND
+    // a binding row. Local CLI callers (ctx.remote === false) skip the
+    // binding check — `gbrain agent run` already runs through subagent.ts
+    // directly without going through this op.
+    if (ctx.remote === false) {
+      throw new OperationError('invalid_request', 'submit_agent over the local CLI: use `gbrain agent run` instead.');
+    }
+
+    const clientId = (ctx as { auth?: { clientId?: string } }).auth?.clientId;
+    if (!clientId || typeof clientId !== 'string') {
+      throw new OperationError('permission_denied', 'submit_agent requires an OAuth client with the `agent` scope.');
+    }
+
+    // Load the binding row.
+    const { sqlQueryForEngine } = await import('./sql-query.ts');
+    const sql = sqlQueryForEngine(ctx.engine);
+    let bindingRows: Array<Record<string, unknown>>;
+    try {
+      bindingRows = await sql`
+        SELECT bound_tools, bound_source_id, bound_brain_id, bound_slug_prefixes,
+               bound_max_concurrent, budget_usd_per_day::text AS budget_cap
+          FROM oauth_clients
+         WHERE client_id = ${clientId}
+      `;
+    } catch (err) {
+      throw new OperationError(
+        'internal',
+        `submit_agent: could not load OAuth client binding: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (bindingRows.length === 0) {
+      throw new OperationError('permission_denied', `submit_agent: client_id ${clientId} not found.`);
+    }
+    const binding = bindingRows[0];
+    const boundTools = (binding.bound_tools as string[] | null) ?? null;
+    const boundSource = (binding.bound_source_id as string | null) ?? null;
+    const boundSlugPrefixes = (binding.bound_slug_prefixes as string[] | null) ?? null;
+    const boundMaxConcurrent = Number(binding.bound_max_concurrent ?? 1);
+    const budgetCapText = (binding.budget_cap as string | null) ?? null;
+
+    if (boundTools === null) {
+      throw new OperationError(
+        'permission_denied',
+        `submit_agent: client ${clientId} has the agent scope but no bindings. Re-register with --bound-tools, --bound-source, --bound-slug-prefixes, --bound-max-concurrent, --budget-usd-per-day.`,
+      );
+    }
+
+    // Validate each param against the binding.
+    const requestedTools = (p.allowed_tools as string[] | undefined) ?? boundTools;
+    for (const t of requestedTools) {
+      if (!boundTools.includes(t)) {
+        throw new OperationError(
+          'permission_denied',
+          `submit_agent: tool "${t}" is not in client ${clientId}'s bound_tools (${boundTools.join(', ')}).`,
+        );
+      }
+    }
+    const requestedSlugPrefixes = (p.allowed_slug_prefixes as string[] | undefined) ?? boundSlugPrefixes ?? [];
+    if (boundSlugPrefixes !== null) {
+      for (const sp of requestedSlugPrefixes) {
+        if (!boundSlugPrefixes.some(bp => sp.startsWith(bp) || bp === sp)) {
+          throw new OperationError(
+            'permission_denied',
+            `submit_agent: slug_prefix "${sp}" is not under any of client ${clientId}'s bound_slug_prefixes.`,
+          );
+        }
+      }
+    }
+
+    // Concurrency cap: count active+waiting agent jobs for this client.
+    const inflight = await sql`
+      SELECT COUNT(*)::int AS n
+        FROM minion_jobs j
+       WHERE j.name = 'subagent'
+         AND j.status IN ('waiting', 'active', 'waiting-children')
+         AND j.data->>'__owner_client_id' = ${clientId}
+    `;
+    const inflightCount = Number((inflight[0]?.n as number | string | undefined) ?? 0);
+    if (inflightCount >= boundMaxConcurrent) {
+      throw new OperationError(
+        'rate_limited',
+        `submit_agent: client ${clientId} at concurrency cap (${inflightCount}/${boundMaxConcurrent}).`,
+      );
+    }
+
+    // Dry-run echo.
+    if (ctx.dryRun) {
+      return {
+        dry_run: true,
+        action: 'submit_agent',
+        client_id: clientId,
+        bound_tools: boundTools,
+        bound_source: boundSource,
+        bound_max_concurrent: boundMaxConcurrent,
+      };
+    }
+
+    // Submit via MinionQueue with allowProtectedSubmit (the agent op is
+    // remote-callable but the underlying job name 'subagent' is protected;
+    // the OAuth scope check above stands in for the protected-name guard).
+    const { MinionQueue } = await import('./minions/queue.ts');
+    const queue = new MinionQueue(ctx.engine);
+
+    const jobData: Record<string, unknown> = {
+      prompt: p.prompt as string,
+      max_turns: Math.min((p.max_turns as number) ?? 20, 100),
+      allowed_tools: requestedTools,
+      allowed_slug_prefixes: requestedSlugPrefixes,
+      __owner_client_id: clientId,
+    };
+    if (typeof p.model === 'string') jobData.model = p.model;
+    if (boundSource) jobData.source_id = boundSource;
+    const job = await queue.add(
+      'subagent',
+      jobData,
+      { queue: (p.queue as string) || 'default' },
+      { allowProtectedSubmit: true },
+    );
+
+    // Audit trail (D4) — best-effort JSONL.
+    try {
+      const { logAgentSubmission } = await import('./minions/agent-audit.ts');
+      const budgetCapCents = budgetCapText ? Math.round(parseFloat(budgetCapText) * 100) : null;
+      const promptText = typeof p.prompt === 'string' ? p.prompt : '';
+      logAgentSubmission({
+        client_id: clientId,
+        job_id: job.id,
+        model: typeof p.model === 'string' ? p.model : '<default>',
+        bound_tools: requestedTools,
+        bound_source: boundSource,
+        slug_prefixes: requestedSlugPrefixes,
+        max_concurrent: boundMaxConcurrent,
+        budget_remaining_cents: budgetCapCents,
+        prompt_byte_count: Buffer.byteLength(promptText, 'utf8'),
+        outcome: 'submitted',
+      });
+    } catch { /* never block submission */ }
+
+    return { id: job.id, name: 'subagent', client_id: clientId };
   },
 };
 
@@ -3475,6 +3765,8 @@ export const operations: Operation[] = [
   // Jobs (Minions)
   submit_job, get_job, list_jobs, cancel_job, retry_job, get_job_progress,
   pause_job, resume_job, replay_job, send_job_message,
+  // v0.38 Slice 3: remote-callable agent dispatch with OAuth-bound trust boundary
+  submit_agent,
   // Orphans
   find_orphans,
   // v0.36.1.0 (T7) — Hindsight calibration wave: read profile via MCP

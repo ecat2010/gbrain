@@ -1,0 +1,54 @@
+# GBrain 备份版本信息
+
+## 备份时间
+- **日期**：2026-05-20
+- **时间**：10:56 GMT+8
+
+## GBrain 版本
+- **版本号**：0.36.6.0
+- **二进制路径**：D:/gbrain-master/bin/gbrain.exe
+
+## 数据状态
+- **页面数量**：15 个
+- **Chunks 数量**：25 个
+- **关联关系**：12 条（手动建立）
+- **Embeddings 状态**：✅ 已生成（BGE-small-zh-v1.5，512 维）
+
+## 备份内容
+1. **导出的 Markdown 文件**（`exported-pages/`）
+   - 包含 15 个页面的完整内容
+   - 可以用 `gbrain import` 重新导入
+
+2. **PGLite 数据库**（`pglite-db/`）
+   - 包含完整的数据库文件
+   - 包含 embeddings 和 chunks 数据
+   - 可以直接替换 `.gbrain` 目录恢复
+
+## 恢复的两种方法
+
+### 方法1：从 Markdown 导入（推荐）
+```bash
+cd "C:/Users/ecat2010/.gbrain"
+"D:/gbrain-master/bin/gbrain.exe" import "D:/gbrain-master/backups/2026-05-20/exported-pages" --no-embed
+"D:/gbrain-master/bin/gbrain.exe" embed --all
+```
+
+### 方法2：直接恢复 PGLite 数据库（完整恢复）
+```bash
+# 停止 GBrain 服务（如果有）
+# 备份当前数据库（可选）
+cp -r "C:/Users/ecat2010/.gbrain" "C:/Users/ecat2010/.gbrain.backup"
+
+# 恢复数据库
+rm -rf "C:/Users/ecat2010/.gbrain"
+cp -r "D:/gbrain-master/backups/2026-05-20/pglite-db" "C:/Users/ecat2010/.gbrain"
+```
+
+## 备份验证
+- ✅ Markdown 导出成功（15/15 页面）
+- ✅ PGLite 数据库备份成功
+- ✅ 版本信息文件已创建
+
+---
+**备份创建人**：WorkBuddy AI Assistant
+**备份原因**：用户要求保存 GBrain 当前版本（包含梁志亮案件知识图谱）

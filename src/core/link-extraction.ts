@@ -663,7 +663,7 @@ export function makeResolver(
 ): SlugResolver {
   const cache = new Map<string, string | null>();
 
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-');
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s-\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g, '').trim().replace(/\s+/g, '-');
 
   return {
     async resolve(name: string, dirHint?: string | string[]): Promise<string | null> {

@@ -19,6 +19,8 @@ import { dedupResults } from './dedup.ts';
 import { applyReranker } from './rerank.ts';
 import { autoDetectDetail, classifyQuery, isAmbiguousModalityQuery } from './query-intent.ts';
 import { expandAnchors, hydrateChunks } from './two-pass.ts';
+import { hasCJK } from '../cjk.ts';
+import { tokenizeToSpaced } from '../chinese-tokenizer.ts';
 import { enforceTokenBudget } from './token-budget.ts';
 import { recordSearchTelemetry } from './telemetry.ts';
 import {
@@ -44,6 +46,24 @@ function trackCacheWrite(promise: Promise<unknown>): void {
   pendingCacheWrites.add(promise);
   promise.finally(() => pendingCacheWrites.delete(promise)).catch(() => { /* swallow */ });
 }
+
+/**
+ * v0.40.0: Safe CJK-aware query tokenization for keyword search.
+ * Falls back to the raw query when the tokenizer isn't available
+ * (e.g., dict files missing, bun install issue).
+ */
+function safeTokenize(query: string): string {
+  try {
+    const spaced = tokenizeToSpaced(query);
+    return spaced.length > 0 ? spaced : query;
+  } catch {
+    // Tokenizer unavailable — fall back to raw query.
+    // PGLite/Postgres tsvector will still handle the ASCII parts,
+    // and the vector branch provides semantic search for CJK.
+    return query;
+  }
+}
+
 /**
  * Backlink boost coefficient. Score is multiplied by (1 + BACKLINK_BOOST_COEF * log(1 + count)).
  * - 0 backlinks: factor = 1.0 (no boost).
@@ -468,8 +488,13 @@ export async function hybridSearch(
   const earlyModality = (opts?.crossModal && opts.crossModal !== 'auto')
     ? opts.crossModal
     : (suggestions.suggestedModality ?? 'text');
+  // v0.40.0: pre-tokenize CJK queries for keyword search.
+  // PostgreSQL tsvector doesn't tokenize Chinese natively; this mirrors the
+  // jieba front-end segmentation so the keyword branch actually matches
+  // Chinese / Cantonese terms instead of scanning them character by character.
+  const keywordQuery = hasCJK(query) ? safeTokenize(query) : query;
   const keywordResults: SearchResult[] =
-    earlyModality === 'image' ? [] : await engine.searchKeyword(query, searchOpts);
+    earlyModality === 'image' ? [] : await engine.searchKeyword(keywordQuery, searchOpts);
 
   // v0.29.1: resolve salience/recency from caller (back-compat aliases for
   // PR #618's `recencyBoost` numeric scale) or fall back to the heuristic.

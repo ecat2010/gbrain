@@ -73,6 +73,24 @@ const TEMPORAL_PATTERNS = [
   /\bhow\s+long\s+(ago|since)\b/i,
   /\b\d{4}[-/]\d{2}\b/i,
   /\blast\s+(week|month|quarter|year)\b/i,
+  // Chinese temporal patterns
+  /最近/i,
+  /近期/i,
+  /近排/i,
+  /歷史/i,
+  /紀錄/i,
+  /记录/i,
+  /時間線/i,
+  /最新/i,
+  /呢排/i,
+  /呢輪/i,
+  /尋日/i,
+  /昨日/i,
+  /琴日/i,
+  /上星期/i,
+  /上個月/i,
+  /今日(?=嘅|既)/i,
+  /update/i,
 ];
 
 const EVENT_PATTERNS = [
@@ -85,6 +103,14 @@ const EVENT_PATTERNS = [
   /\bmerge[drs]?\b/i,
   /\bnews\b/i,
   /\bhappened?\b/i,
+  // Chinese event patterns
+  /發生(了|咗)?/i,
+  /公(布|佈)/i,
+  /消息/i,
+  /新聞/i,
+  /通知/i,
+  /通告/i,
+  /新消息/i,
 ];
 
 const ENTITY_PATTERNS = [
@@ -97,6 +123,17 @@ const ENTITY_PATTERNS = [
   /\bbackground\b/i,
   /\bprofile\b/i,
   /\bwhat\s+do\s+(you|we)\s+know\b/i,
+  // Chinese entity patterns
+  /誰(是|係)/i,
+  /边个(係|系)/i,
+  /邊個(係|系)/i,
+  /什麼是/i,
+  /乜嘢係/i,
+  /咩係/i,
+  /講下/i,
+  /介紹(下)?/i,
+  /總結/i,
+  /概括/i,
 ];
 
 const FULL_CONTEXT_PATTERNS = [
@@ -106,6 +143,11 @@ const FULL_CONTEXT_PATTERNS = [
   /\bcomprehensive\b/i,
   /\bdeep\s+dive\b/i,
   /\bgive\s+me\s+everything\b/i,
+  // Chinese full-context patterns
+  /所有(嘅|的)?(資料|信息|資訊)/i,
+  /全部(嘅|的)?(資料|信息|資訊)/i,
+  /詳細(嘅|的)?(資料|信息|資訊)/i,
+  /完整(嘅|的)?(資料|信息|資訊)/i,
 ];
 
 // v0.29.1 — recency-axis patterns
@@ -126,6 +168,14 @@ const CANONICAL_PATTERNS = [
   /::|->|\.\w+\(/,
   /\b(function|class|method|module)\s+\w+/i,
   /\b(graph|traversal|backlinks?|inbound|outbound)\b/i,
+  // Chinese canonical patterns
+  /誰(是|係)/i,
+  /邊個(係|系)/i,
+  /什麼(是|叫|係)/i,
+  /定義/i,
+  /解釋/i,
+  /概念/i,
+  /背景/i,
 ];
 
 // Aggressive recency: "today", "right now", "this morning", "just now".
@@ -134,6 +184,12 @@ const STRONG_RECENCY_PATTERNS = [
   /\bright\s+now\b/i,
   /\bthis\s+morning\b/i,
   /\bjust\s+now\b/i,
+  // Chinese strong recency
+  /今日/i,
+  /而家/i,
+  /依家/i,
+  /即刻/i,
+  /立刻/i,
 ];
 
 // Moderate recency: "what's going on", "latest", "recent", "this week",
@@ -148,6 +204,16 @@ const RECENCY_ON_PATTERNS = [
   /\bcatch(es|ing)?\b[\s\w]{0,15}\bup\b/i,  // "catch up", "catch me up", "catching X up"
   /\bremind\s+me\s+(what|about|of)\b/i,
   /\b(update|status|progress)\s+(on|with|from)\b/i,
+  // Chinese moderate recency
+  /最近/i,
+  /近期/i,
+  /近排/i,
+  /最新/i,
+  /呢排/i,
+  /呢輪/i,
+  /更新/i,
+  /準備/i,
+  /prep/i,
 ];
 
 // Per D6: explicit temporal bounds override canonical-wins. "Who is X today"
@@ -159,6 +225,14 @@ const EXPLICIT_TEMPORAL_BOUND_PATTERNS = [
   /\bthis\s+week\b/i,
   /\bsince\s+(launch|last|the|\d)/i,
   /\blast\s+\d+\s+(day|days|week|weeks|month|months)\b/i,
+  // Chinese temporal bounds
+  /今日/i,
+  /而家/i,
+  /依家/i,
+  /上(個|个)星期/i,
+  /上(個|个)月/i,
+  /最近/i,
+  /近期/i,
 ];
 
 // v0.29.1 — salience-axis patterns
@@ -178,6 +252,12 @@ const SALIENCE_ON_PATTERNS = [
   /\b(update|status|progress)\s+(on|with|from)\b/i,
   /\bwhat\s+matters\b/i,
   /\bwhat'?s\s+important\b/i,
+  // Chinese salience patterns
+  /發生(咗|了)咩/i,
+  /有咩事/i,
+  /最新情況/i,
+  /重要(嘅|的)(事|嘢)/i,
+  /緊要(嘅|的)(事|嘢)/i,
 ];
 
 // v0.36 cross-modal wave — modality-axis patterns (D6).
